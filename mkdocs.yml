@@ -1,0 +1,27 @@
+---
+site_name: ACI Hardware Support Matrix
+
+nav:
+  - Show Newer Versions Only: 'index.md'
+  - Show All Versions: 'full.md'
+
+theme:
+  name: material
+  logo: assets/Cisco_Logo_no_TM_Sky_Blue-RGB.svg
+  favicon: assets/Cisco_Logo_no_TM_Sky_Blue-RGB.svg
+  palette:
+    primary: white
+  features:
+    - header.autohide
+    - navigation.tabs
+
+markdown_extensions:
+  - admonition
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins: []
+
+extra_css:
+  - style.css
