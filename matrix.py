@@ -82,6 +82,7 @@ HW_PIDS = {
 }
 # db_hwSupportXXXX.js for old versions do not list APICs. Hardcoding minimum
 # supported version for those. 1.x versions are out of scope.
+# These should be used only for db_hwSupportXXXX.js for versions older than MIN_VER.
 HW_PIDS_VERSION = {
     "APIC-M1": "2.0(1)",
     "APIC-L1": "2.0(1)",
@@ -207,10 +208,6 @@ def main():
         if support_per_version.get(v.simple_version):
             continue
 
-        # DELETE ME
-        # if v.simple_version != "6.0(5)" and v.simple_version != "2.0(1)":
-        #    continue
-
         # db_hwSupportXXXX.js needs the version 6.0(4) in the form of 1604
         url = hwsupport_url_prefix + "1" + v.compressed_version + ".js"
         hw_list = get_taffy_db(url)
@@ -240,8 +237,10 @@ def main():
             for pid, pid_data in pids_dict.items():
                 if not pid_data.get(version):
                     v = AciVersion(version)
-                    if HW_PIDS_VERSION.get(pid) and not v.older_than(
-                        HW_PIDS_VERSION[pid]
+                    if (
+                        HW_PIDS_VERSION.get(pid)
+                        and not v.older_than(HW_PIDS_VERSION[pid])
+                        and v.older_than(MIN_VER)
                     ):
                         pid_data[version] = MD_ICON_SUPPORTED
                     else:
