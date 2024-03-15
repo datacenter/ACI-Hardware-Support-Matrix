@@ -66,11 +66,14 @@ HW_PIDS = {
     # db_hwSupportXXXX.js may say "Spine switch"
     "Fixed Spine Switches": [
         "N9K-C9336PQ",
+        "N9K-C9332C",
+        "N9K-C9364C",
     ],
     # db_hwSupportXXXX.js may say "Spine switch module"
     "Modular Spine Switch Line Cards": [
         "N9K-X9732C-EX",
         "N9K-X9736PQ",
+        "N9K-X9736Q-FX",  # listed as Spine switch in 1411,1412.
     ],
     # db_hwSupportXXXX.js may say "Spine switch module"
     "Modular Spine Switch Fabric Modules": [
@@ -78,6 +81,9 @@ HW_PIDS = {
         "N9K-C9504-FM-E",
         "N9K-C9508-FM",
         "N9K-C9508-FM-E",
+        "N9K-C9508-FM-E2",
+        "N9K-C9516-FM",
+        "N9K-C9516-FM-E2",
     ],
 }
 # db_hwSupportXXXX.js for old versions do not list APICs. Hardcoding minimum
@@ -92,7 +98,8 @@ HW_PIDS_VERSION = {
     "APIC-L3": "4.0(1)",
 }
 HW_PIDS_TO_IGNORE = [
-    "Cisco Nexus 9504"  # this is a duplicate and wrong entry listed as a line card
+    "Cisco Nexus 9504",  # this is a duplicate and wrong entry listed as a line card
+    "",  # this empty PID is listed in 1603
 ]
 
 
