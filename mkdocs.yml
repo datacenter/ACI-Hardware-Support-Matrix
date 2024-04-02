@@ -4,6 +4,7 @@ site_name: ACI Hardware Support Matrix
 nav:
   - Show Newer Versions Only: 'index.md'
   - Show All Versions: 'full.md'
+  - Show Chronologically: 'chrono.md'
 
 theme:
   name: material

@@ -2,6 +2,7 @@ import logging
 import multiline
 import re
 import requests
+from collections import defaultdict
 from functools import cmp_to_key
 from py_markdown_table.markdown_table import markdown_table
 
@@ -9,21 +10,16 @@ hwsupport_url_prefix = "https://www.cisco.com/c/dam/en/us/td/docs/Website/datace
 apicrelease_url = "https://www.cisco.com/c/dam/en/us/td/docs/Website/datacenter/_common/js/db_apicReleases.js"  # noqa: E501
 
 MIN_VER = "4.2(1)"
-HW_PID_KEY = "Product Model"
+PID_KEY = "Product Model"  # table header for per PID tables
+VERSION_KEY = "Version"  # table header for chronological table
 
-HW_TYPES = [
+PID_TYPES = [
     # APIC
     ["APIC Servers"],
-    # Modular Spine Chassis
-    ["Modular Spine Switches", "Spine switch", "Chassis"],
-    # Modular Spine Line Cards
-    ["Modular Spine Switch Line Cards", "Spine switch module"],
-    # Modular Spine Fabric Cards
-    ["Modular Spine Switch Fabric Modules", "Spine switch module"],
-    # Modular Spine SUP and SC
-    ["Modular Spine Switch Supervisor and System Controller Modules", "Switch module"],
-    # Modular Leaf Switches
-    ["Modular Leaf Switches"],
+    # Fixed Leaf Switches
+    ["Fixed Leaf Switches", "Top-of-rack (ToR) leaf switch", "Leaf switch"],
+    # Fixed Spine Switches
+    ["Fixed Spine Switches", "Spine switch"],
     # Modular Leaf Line Cards
     ["Modular Leaf Switch Line Cards"],
     # Modular Leaf SUP
@@ -31,12 +27,18 @@ HW_TYPES = [
         "Modular Leaf Switch Supervisor",
         "Modular Leaf Switch Supervisor and System Controller Modules",
     ],
-    # Fixed Spine Switches
-    ["Fixed Spine Switches", "Spine switch"],
-    # Fixed Leaf Switches
-    ["Fixed Leaf Switches", "Top-of-rack (ToR) leaf switch", "Leaf switch"],
+    # Modular Leaf Switches
+    ["Modular Leaf Switches"],
+    # Modular Spine Fabric Cards
+    ["Modular Spine Switch Fabric Modules", "Spine switch module"],
+    # Modular Spine Line Cards
+    ["Modular Spine Switch Line Cards", "Spine switch module"],
+    # Modular Spine SUP and SC
+    ["Modular Spine Switch Supervisor and System Controller Modules", "Switch module"],
+    # Modular Spine Chassis
+    ["Modular Spine Switches", "Spine switch", "Chassis"],
 ]
-HW_TYPES_TO_IGNORE = [
+PID_TYPES_TO_IGNORE = [
     "Pluggable module (GEM)",
     "Expansion Modules",
     "Modular Spine Switch Fans",
@@ -56,7 +58,7 @@ HW_TYPES_TO_IGNORE = [
 ]
 # db_hwSupportXXXX.js for old versions use the same type for different switches
 # even within the same version. Hardcoding only those exceptions.
-HW_PIDS = {
+DIRTY_PIDS = {
     # db_hwSupportXXXX.js may say "Spine switch"
     "Modular Spine Switches": [
         "N9K-C9508-B1",
@@ -73,6 +75,7 @@ HW_PIDS = {
     "Modular Spine Switch Line Cards": [
         "N9K-X9732C-EX",
         "N9K-X9736PQ",
+        "N9K-X9736C-FX",
         "N9K-X9736Q-FX",  # listed as Spine switch in 1411,1412.
     ],
     # db_hwSupportXXXX.js may say "Spine switch module"
@@ -86,21 +89,23 @@ HW_PIDS = {
         "N9K-C9516-FM-E2",
     ],
 }
-# db_hwSupportXXXX.js for old versions do not list APICs. Hardcoding minimum
-# supported version for those. 1.x versions are out of scope.
-# These should be used only for db_hwSupportXXXX.js for versions older than MIN_VER.
-HW_PIDS_VERSION = {
-    "APIC-M1": "2.0(1)",
-    "APIC-L1": "2.0(1)",
-    "APIC-M2": "2.0(1)",
-    "APIC-L2": "2.0(1)",
-    "APIC-M3": "4.0(1)",
-    "APIC-L3": "4.0(1)",
-}
-HW_PIDS_TO_IGNORE = [
+PIDS_TO_IGNORE = [
     "Cisco Nexus 9504",  # this is a duplicate and wrong entry listed as a line card
     "",  # this empty PID is listed in 1603
 ]
+# db_hwSupportXXXX.js for old versions do not list APICs even when they are supported.
+# Hardcoding minimum supported version for those. 1.x versions are out of scope.
+# These should be used only for db_hwSupportXXXX.js for versions older than 4.2(1)
+# as db_hwSupportXXXX.js lists APICs from 4.2(1) and APICs that are not listed are
+# not supported on those new versions.
+MIN_SUPPORT_VERSIONS = {
+    "APIC-M1": {"min": "2.0(1)", "valid": "4.2(1)"},
+    "APIC-L1": {"min": "2.0(1)", "valid": "4.2(1)"},
+    "APIC-M2": {"min": "2.0(1)", "valid": "4.2(1)"},
+    "APIC-L2": {"min": "2.0(1)", "valid": "4.2(1)"},
+    "APIC-M3": {"min": "4.0(1)", "valid": "4.2(1)"},
+    "APIC-L3": {"min": "4.0(1)", "valid": "4.2(1)"},
+}
 
 
 MD_ICON_SUPPORTED = ":white_check_mark:"
@@ -152,7 +157,7 @@ class AciVersion:
                     return False
                 elif int(self.regex.group(i)) < int(v.group(i)):
                     return True
-            if i == 4 and self.patch:
+            if i == 4 and v.group(i) and self.patch:
                 if self.regex.group(i) > v.group(i):
                     return False
                 elif self.regex.group(i) < v.group(i):
@@ -189,103 +194,245 @@ def get_taffy_db(url: str):
     return contents
 
 
-def get_hw_type(hw_type: str, hw_pid: str):
-    """Use the same type across versions because each db_hwSupportXXXX.js
-    uses a different type name for the same product."""
-    for pid_type, pids in HW_PIDS.items():
-        if hw_pid in pids:
-            return pid_type
-    for type_list in HW_TYPES:
-        if hw_type in type_list:
+def get_pid_type(pid_type: str, pid: str):
+    """Make sure to use the same PID type across versions.
+    Each db_hwSupportXXXX.js uses a different type name for the same PID.
+    """
+    # PID in DIRTY_PIDS is known to have a wrong PID type/category. Hardcode them.
+    for _pid_type, pids in DIRTY_PIDS.items():
+        if pid in pids:
+            return _pid_type
+    # Inconsistent PID type but they are still in the correct category.
+    # Always pick the same type name from the same category.
+    for type_list in PID_TYPES:
+        if pid_type in type_list:
             return type_list[0]
-    logging.error(f"Unknown HW Type - {hw_type}")
-    return hw_type
+    logging.error(f"Unknown PID Type - {pid_type}")
+    return pid_type
+
+
+def create_per_pid_data(ptype_ver_pid: dict, all_versions: list):
+    per_pid = {
+        "full": defaultdict(list),  # all versions
+        "newer": defaultdict(list),  # only versions newer than MIN_VER
+    }
+    for pid_type, p2v in ptype_ver_pid.items():
+        for pid, supported_versions in p2v.items():
+            full_versions = {}
+            newer_versions = {}
+            # Convert supported/not supported into emoji
+            for version in all_versions:
+                v = AciVersion(version)
+                if v.simple_version in supported_versions:
+                    icon = MD_ICON_SUPPORTED
+                else:
+                    icon = MD_ICON_NOTSUPPORTED
+
+                full_versions[version] = icon
+                if not v.older_than(MIN_VER):
+                    newer_versions[version] = icon
+
+            # Create table data for each PID type separately
+            per_pid["full"][pid_type].append(
+                {
+                    **{PID_KEY: pid},
+                    **full_versions,
+                }
+            )
+            per_pid["newer"][pid_type].append(
+                {
+                    **{PID_KEY: pid},
+                    **newer_versions,
+                }
+            )
+    return per_pid
+
+
+def create_chronological_data(ver_ptype_pid: dict):
+    per_version = []
+    prev_version = {pid_type[0]: [] for pid_type in PID_TYPES}
+    for version in ver_ptype_pid:
+        support_changes = {}
+        # Check the delta between the previous and current version.
+        # Only store the delta.
+        for pid_type in ver_ptype_pid[version]:
+            prev_pids = prev_version[pid_type]
+            new_pids = ver_ptype_pid[version][pid_type]
+            new_support = [pid for pid in new_pids if pid not in prev_pids]
+            new_deprecate = [
+                f"<span class='deprecated-pid'>{pid}</span>"
+                for pid in prev_pids
+                if pid not in new_pids
+            ]
+            new_changes = new_support + new_deprecate
+            support_changes[pid_type] = "<br>".join(new_changes)
+            prev_version[pid_type] = new_pids
+
+        # Show only versions that have some changes.
+        if any(support_changes.values()):
+            ver_label = "2.0(1)<br>or older" if version == "2.0(1)" else version
+            per_version.append(
+                {
+                    **{VERSION_KEY: ver_label},
+                    **support_changes,
+                }
+            )
+    return per_version
+
+
+def write_per_pid_markdown(size: str, prefix: str, data_per_pid_type: list[dict]):
+    # Create one markdown table for each PID type separately
+    md_text = prefix
+    for pid_type, data in data_per_pid_type.items():
+        md_table = (
+            markdown_table(data)
+            .set_params(quote=False, row_sep="markdown")
+            .get_markdown()
+        )
+        md_text += f"\n# {pid_type}\n"
+        md_text += md_table
+        md_text += "\n"
+
+    filename = "index" if size == "newer" else size
+    with open(f"docs/{filename}.md", "w") as f:
+        f.write(md_text)
+
+
+def write_chronological_markdown(prefix: str, data: list[dict]):
+    # Create one markdown table for all chronological changes
+    md_table = (
+        markdown_table(data).set_params(quote=False, row_sep="markdown").get_markdown()
+    )
+    md_text = prefix
+    md_text += "\n# Chronological View\n"
+    md_text += md_table
+    md_text += "\n"
+    with open("docs/chrono.md", "w") as f:
+        f.write(md_text)
 
 
 def main():
-    support_per_type = {}
-    support_per_type_pid = {}
-    support_per_version = {}
+    """
+    Step 1. Create data per PID_type/PID and per version/PID_type
+        ptype_ver_pid = {
+            "type1": {
+                "pid1": ["version1", "version2",...],
+                "pid2": ["version2", "version3",...],
+            },
+            ...
+        }
+        ver_ptype_pid = {
+            "version1": {
+                "type1": ["pid1", "pid2",...],
+                "type2": ["pid2", "pid3",...],
+            },
+            ...
+        }
+
+    Step 2. Format each data to make tables with py_markdown_table.
+        per_pid = {
+            "full": {
+                "type1": [{
+                    PID_KEY: "pid1",
+                    "version1": MD_ICON_NOTSUPPORTED,
+                    "version2": MD_ICON_NOTSUPPORTED,
+                    "version3": MD_ICON_SUPPORTED,
+                    ...
+                }, {
+                    ...
+                }],
+            },
+            "newer": {  # only versions newer than MIN_VER. this will be index.md.
+                ...
+            }
+        }
+
+        per_version = [
+            {
+                "VERSION_KEY": "version1",
+                "type1": "pid1, pid2, pid3(deprecated)",
+                "type2": "",
+                "type3": "pid1",
+            }, {
+                "VERSION_KEY": "version2",
+                "type1": "pid4"
+                "type2": "",
+                "type3": "",
+            }
+        ]
+    """
+    ptype_ver_pid = {pid_type[0]: defaultdict(list) for pid_type in PID_TYPES}
+    ver_ptype_pid = {}
 
     releases = get_taffy_db(apicrelease_url)
 
     for release_dict in releases:
         release = release_dict.get("Release", "")
         v = AciVersion(release)
-        if support_per_version.get(v.simple_version):
+
+        logging.info(f" --- Release {v} as {v.simple_version} ---")
+        if v.simple_version in ver_ptype_pid:
+            # There should be no changes in hardware support between patches
+            logging.info(f"Release {v.simple_version} was already done. Skip this one")
             continue
+
+        ver_ptype_pid[v.simple_version] = {pid_type[0]: [] for pid_type in PID_TYPES}
 
         # db_hwSupportXXXX.js needs the version 6.0(4) in the form of 1604
         url = hwsupport_url_prefix + "1" + v.compressed_version + ".js"
         hw_list = get_taffy_db(url)
 
-        support_per_version[v.simple_version] = hw_list
         for hw in hw_list:
-            if (
-                hw["ProdType"] in HW_TYPES_TO_IGNORE
-                or hw["ProdID"] in HW_PIDS_TO_IGNORE
-            ):
+            if hw["ProdType"] in PID_TYPES_TO_IGNORE or hw["ProdID"] in PIDS_TO_IGNORE:
                 continue
 
             pid = hw["ProdID"]
-            pid_type = get_hw_type(hw["ProdType"], pid)
+            pid_type = get_pid_type(hw["ProdType"], pid)
 
-            if not support_per_type_pid.get(pid_type):
-                support_per_type_pid[pid_type] = {}
-            if not support_per_type_pid[pid_type].get(pid):
-                support_per_type_pid[pid_type][pid] = {}
+            ptype_ver_pid[pid_type][pid].append(v.simple_version)
+            ver_ptype_pid[v.simple_version][pid_type].append(pid)
 
-            support_per_type_pid[pid_type][pid][v.simple_version] = MD_ICON_SUPPORTED
             logging.info(f"[{pid_type}] {pid}: {v.simple_version} supported")
 
-    # Add non-supported versions to each PID
-    for version in support_per_version:
-        for pids_dict in support_per_type_pid.values():
-            for pid, pid_data in pids_dict.items():
-                if not pid_data.get(version):
-                    v = AciVersion(version)
-                    if (
-                        HW_PIDS_VERSION.get(pid)
-                        and not v.older_than(HW_PIDS_VERSION[pid])
-                        and v.older_than(MIN_VER)
-                    ):
-                        pid_data[version] = MD_ICON_SUPPORTED
-                    else:
-                        pid_data[version] = MD_ICON_NOTSUPPORTED
+    logging.info(f"Number of versions: {len(ver_ptype_pid)}")
+    logging.info(f"Number of PID types: {len(ptype_ver_pid)}")
 
-    # Sort PID types, PIDs and versions for each PID
-    support_per_type_pid = dict(sorted(support_per_type_pid.items()))
-    for pid_type, pids_dict in support_per_type_pid.items():
-        support_per_type[pid_type] = {
-            "full": [],
-            "index": [],
-        }
-        pids = dict(sorted(pids_dict.items()))
-        for pid, pid_data in pids.items():
-            pid_data = dict(
-                sorted(
-                    pid_data.items(),
-                    key=cmp_to_key(lambda v1, v2: version_sort(v1[0], v2[0])),
-                )
-            )
-            min_ver = AciVersion(MIN_VER)
-            _pid_data = {
-                "full": pid_data,
-                "index": {
-                    k: v for k, v in pid_data.items() if not min_ver.newer_than(k)
-                },
-            }
-            for size, data in support_per_type[pid_type].items():
-                data.append(
-                    {
-                        **{HW_PID_KEY: pid},
-                        **_pid_data[size],
-                    }
-                )
+    # APICs need to be added as supported for older versions
+    # for which db_hwSupportXXXX.js does not list APICs at all.
+    for pid_type in ptype_ver_pid:
+        for pid in ptype_ver_pid[pid_type]:
+            if pid not in MIN_SUPPORT_VERSIONS:
+                continue
+            for version in ver_ptype_pid:
+                v = AciVersion(version)
+                if not v.older_than(MIN_SUPPORT_VERSIONS[pid]["min"]) and v.older_than(
+                    MIN_SUPPORT_VERSIONS[pid]["valid"]
+                ):
+                    if version not in ptype_ver_pid[pid_type][pid]:
+                        ptype_ver_pid[pid_type][pid].append(version)
+                    if pid not in ver_ptype_pid[version][pid_type]:
+                        ver_ptype_pid[version][pid_type].append(pid)
 
-    # Create markdown tables with the hide property to
+    # Sort
+    for pid_type, pids in ptype_ver_pid.items():
+        ptype_ver_pid[pid_type] = dict(sorted(pids.items()))
+
+    ver_ptype_pid = dict(
+        sorted(
+            ver_ptype_pid.items(),
+            key=cmp_to_key(lambda item1, item2: version_sort(item1[0], item2[0])),
+        )
+    )
+
+    # Create per PID data to convert to markdown table
+    per_pid = create_per_pid_data(ptype_ver_pid, all_versions=ver_ptype_pid.keys())
+
+    # Create chronological data to convert to markdown table
+    per_version = create_chronological_data(ver_ptype_pid)
+
+    # Create markdown pages with the hide property to
     # hide Navigation and ToC for mkdocs material
-    text = """---
+    prefix = """---
 hide:
   - navigation
   - toc
@@ -295,21 +442,16 @@ hide:
     The matrix below are based on data from [Cisco Nexus ACI-Mode Switches Hardware Support Matrix](https://www.cisco.com/c/dam/en/us/td/docs/Website/datacenter/acihwsupport/index.html).
 
 """  # noqa: E501
-    md_texts = {"full": text, "index": text}
-    for pid_type, data in support_per_type.items():
-        for size in md_texts:
-            md_texts[size] += f"\n# {pid_type}\n"
-            md_table = (
-                markdown_table(data[size])
-                .set_params(quote=False, row_sep="markdown")
-                .get_markdown()
-            )
-            md_texts[size] += md_table
-            md_texts[size] += "\n"
+    color_note = """
+!!! info
+    Products that were newly supported from a certain version are shown with plain texts - Ex.) N9K-C9372PX<br>
+    Products that were <span class='deprecated-pid'>deprecated</span> from a certain version are shown with colored texts - Ex.) <span class='deprecated-pid'>N9K-C9372PX</span>
+"""  # noqa: E501
 
-    for size, md_text in md_texts.items():
-        with open(f"docs/{size}.md", "w") as f:
-            f.write(md_text)
+    for size, data_per_pid_type in per_pid.items():
+        write_per_pid_markdown(size, prefix, data_per_pid_type)
+
+    write_chronological_markdown(prefix + color_note, per_version)
 
 
 if __name__ == "__main__":
