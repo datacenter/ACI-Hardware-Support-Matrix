@@ -386,7 +386,7 @@ def main():
             if hw["ProdType"] in PID_TYPES_TO_IGNORE or hw["ProdID"] in PIDS_TO_IGNORE:
                 continue
 
-            pid = hw["ProdID"]
+            pid = hw["ProdID"].upper()
             pid_type = get_pid_type(hw["ProdType"], pid)
 
             ptype_ver_pid[pid_type][pid].append(v.simple_version)
