@@ -2,8 +2,9 @@ name: gh-page
 on:
   push:
     branches:
-      - master
       - main
+    paths:
+      - "docs/**"
 permissions:
   contents: write
 jobs:
